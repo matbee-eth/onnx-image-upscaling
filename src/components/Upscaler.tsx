@@ -47,8 +47,30 @@ class UpscalerONNXRuntimeWeb {
     provider: "webgpu" | "wasm" | "cpu"
   ): Promise<void> {
     const options: ort.InferenceSession.SessionOptions = {
-      executionProviders: [provider],
+      executionProviders: [
+        {
+          name: "webgpu",
+          preferredLayout: "NCHW",
+        },
+      ],
       graphOptimizationLevel: "all",
+      enableProfiling: false,
+      enableMemPattern: false,
+      enableCpuMemArena: false,
+      logSeverityLevel: 3 /*disable logs like 
+         [W:onnxruntime:, session_state.cc:1166 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+         [W:onnxruntime:, session_state.cc:1168 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.
+         */,
+      extra: {
+        session: {
+          disable_prepacking: "1",
+          use_device_allocator_for_initializers: "1",
+          use_ort_model_bytes_directly: "1",
+          use_ort_model_bytes_for_initializers: "1",
+          disable_cpu_ep_fallback: "0",
+        },
+      },
+      freeDimensionOverrides: { batch_size: 1 },
     };
 
     if (provider === "wasm") {
@@ -134,17 +156,27 @@ class UpscalerONNXRuntimeWeb {
     originalHeight: number
   ): ImageData {
     const data = outputTensor.data as Float32Array;
+    console.log("Last 100 values of data:", data.slice(-100));
     const [, , height, width] = outputTensor.dims;
 
     console.log("Output tensor shape:", outputTensor.dims);
     console.log("Output data length:", data.length);
     console.log("Original dimensions:", originalWidth, "x", originalHeight);
 
-    if (width !== originalWidth * 2 || height !== originalHeight * 4) {
-      console.error(
-        `Unexpected output dimensions. Expected ${originalWidth * 2}x${
-          originalHeight * 4
-        }, got ${width}x${height}`
+    console.log("Output tensor shape:", outputTensor.dims);
+    console.log("Output data length:", data.length);
+    console.log("Original dimensions:", originalWidth, "x", originalHeight);
+    console.log("New dimensions:", width, "x", height);
+
+    // Calculate the scale factor
+    const scaleX = width / originalWidth;
+    const scaleY = height / originalHeight;
+
+    if (Math.abs(scaleX - scaleY) > 0.01) {
+      console.warn(
+        `Uneven scaling factors: ${scaleX.toFixed(
+          2
+        )}x horizontally, ${scaleY.toFixed(2)}x vertically`
       );
     }
 
@@ -154,8 +186,10 @@ class UpscalerONNXRuntimeWeb {
       for (let x = 0; x < width; x++) {
         const imageDataIndex = (y * width + x) * 4;
         for (let c = 0; c < 3; c++) {
+          // NCHW format
           const tensorIndex = c * height * width + y * width + x;
           const value = data[tensorIndex];
+          // console.log(`Value:`, value);
           imageData.data[imageDataIndex + c] = Math.max(
             0,
             Math.min(255, Math.round(value * 255))
